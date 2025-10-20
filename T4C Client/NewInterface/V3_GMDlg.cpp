@@ -7,6 +7,10 @@
 #include "..\GUILocalString.h"  //g_GUILocalString[]
 #include "..\SaveGame.h"
 #include "..\App.h"
+#include "..\TileSet.h"
+
+#include <queue>
+#include <utility>
 #include "..\FormatText.h"
 #include "V3_GMDlg.h"
 #include "V3_ChatLogDlg.h"
@@ -1171,9 +1175,15 @@ void V3_GMDlg::TileEvent::LeftClicked( void )
       {
          if(mousePos.x >=0 && mousePos.x < 36 && mousePos.y >=0 && mousePos.y < 46)
          {
-            me->m_bTileMosaic[mousePos.y][mousePos.x] = 1-me->m_bTileMosaic[mousePos.y][mousePos.x];
+            const BOOL bNewState = me->m_bTileMosaic[mousePos.y][mousePos.x] ? FALSE : TRUE;
+            me->m_bTileMosaic[mousePos.y][mousePos.x] = bNewState;
+
+            if(bNewState && (GetAsyncKeyState(VK_SHIFT) & 0x8000))
+            {
+               me->FloodFillTileSelection(mousePos.x, mousePos.y);
+            }
          }
-         
+
          //char strTmp[512];
          //sprintf_s(strTmp,512,"Tile %d,%d",mousePos.x,mousePos.y);
          //V3_ChatLogDlg::GetInstance()->AddListLogs("", strTmp, CL_YELLOW, true);
@@ -2210,6 +2220,60 @@ void V3_GMDlg::ComboReturn(UINT uiShowCodeP,char *pStrValue)
             }
          }
          return;
+      }
+   }
+}
+
+void V3_GMDlg::FloodFillTileSelection(int tileX, int tileY)
+{
+   if(tileX < 0 || tileX >= 36 || tileY < 0 || tileY >= 46)
+      return;
+
+   const int baseWorldX = Player.xPos - 17;
+   const int baseWorldY = Player.yPos - 25;
+   const int startWorldX = baseWorldX + tileX;
+   const int startWorldY = baseWorldY + tileY;
+
+   const int referenceType = World.GetPosView1(startWorldX, startWorldY);
+   if(referenceType < 0)
+      return;
+
+   bool visited[46][36] = { false };
+   std::queue<std::pair<int, int>> pending;
+   pending.push(std::make_pair(tileX, tileY));
+   visited[tileY][tileX] = true;
+
+   while(!pending.empty())
+   {
+      const std::pair<int, int> current = pending.front();
+      pending.pop();
+
+      const int currentX = current.first;
+      const int currentY = current.second;
+
+      if(currentX < 0 || currentX >= 36 || currentY < 0 || currentY >= 46)
+         continue;
+
+      const int worldX = baseWorldX + currentX;
+      const int worldY = baseWorldY + currentY;
+
+      if(World.GetPosView1(worldX, worldY) != referenceType)
+         continue;
+
+      m_bTileMosaic[currentY][currentX] = TRUE;
+
+      const int neighbors[4][2] = { { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } };
+      for(int i = 0; i < 4; ++i)
+      {
+         const int nextX = currentX + neighbors[i][0];
+         const int nextY = currentY + neighbors[i][1];
+         if(nextX < 0 || nextX >= 36 || nextY < 0 || nextY >= 46)
+            continue;
+         if(visited[nextY][nextX])
+            continue;
+
+         visited[nextY][nextX] = true;
+         pending.push(std::make_pair(nextX, nextY));
       }
    }
 }

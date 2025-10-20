@@ -249,15 +249,16 @@ private:
    }sDrawData;
 
    std::vector <sDrawData>  m_DrawList;
-   
+
    void LoadFileData(char *pstrName);
    bool MouseToTileCoord(long &iX, long &iY);
    bool MouseToMapCoord(long &iX, long &iY);
    bool MapCoordToMouse(int iOffX,int iOffY,long iXs, long iYs, long &iX, long &iY);
 
    void ComboReturn(UINT uiShowCodeP,char *pStrValue);
-   
-  
+   void FloodFillTileSelection(int tileX, int tileY);
+
+
    bool m_bLockPlayerPos;
 
    BOOL m_bTileMosaic[46][36];
