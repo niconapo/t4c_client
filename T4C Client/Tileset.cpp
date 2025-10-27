@@ -26,9 +26,11 @@
 
 
 #include "SmoothTile\SmoothTileLoader.h"
-#include "pch.h" 
+#include "pch.h"
 
 #include <stdio.h>
+#include <map>
+#include <vector>
 
 #include "TileSet.h"
  
@@ -18310,66 +18312,229 @@ bool TileSet::DrawTileSetA(int xScreen, int yScreen, USHORT TileSet, RECT *Clip,
 
    
    
-   for (UINT c = 0; c < rSmoothTile.m_Layers.size(); ++c)
+   struct SmoothMaskInfo
    {
-      int iNX = iX+rSmoothTile.m_Offsets[c].m_OffsetX;
-      int iNY = iY+rSmoothTile.m_Offsets[c].m_OffsetY;
-      iNX = NM_Max<int>(0, iNX);
-      iNX = NM_Min<int>(iNX, (ViewWidth+Square+Square)-1);
-      iNY = NM_Max<int>(0, iNY);
-      iNY = NM_Min<int>(iNY, (ViewHeight+Square+Square)-1);
-
-      
-      unsigned short LayerColorID = CompiledView1[(iNX)+((iNY)*iW)];
-      
-      CV2Sprite  *pLayerTile = GetSpriteID(LayerColorID);
-
-      if(pLayerTile)
+      SmoothMaskInfo()
       {
-         LPWORD surf1 = pLayerTile->GetSurfaceMemory(); 
-      
-         if(surf1)
+         m_bInitialized = false;
+         m_bIsBinaryMask = false;
+         m_VecMask.assign(32 * 16, 0.0f);
+      }
+
+      bool m_bInitialized;
+      bool m_bIsBinaryMask;
+      std::vector<float> m_VecMask;
+   };
+
+   static std::map<int, SmoothMaskInfo> s_MapSmoothMaskInfo;
+
+   bool bHandledByBinaryMask = false;
+
+   if (rSmoothTile.m_Layers.size() == 2)
+   {
+      SmoothMaskInfo &rMaskInfo = s_MapSmoothMaskInfo[TileSet];
+
+      if (rMaskInfo.m_bInitialized == false)
+      {
+         rMaskInfo.m_bInitialized = true;
+
+         CV2Sprite *pMaskSprite = GetSpriteID(TileSet);
+         if (pMaskSprite)
          {
-
-            for (unsigned int j = 0; j < 16; ++j)
+            LPWORD pMaskSurface = pMaskSprite->GetSurfaceMemory();
+            if (pMaskSurface)
             {
-               for (unsigned int i = 0; i < 32; ++i)
+               bool bHasBlack = false;
+               bool bHasWhite = false;
+               bool bInvalidMask = false;
+
+               for (unsigned int j = 0; j < 16 && !bInvalidMask; ++j)
                {
-                  int TileIndex = j * 32 + i;
-            
-            
-                  s1 = surf1[TileIndex];
-                  /*
-                  sr =((s1 & RBM) * 255) / RBM;
-                  sg =((s1 & GBM) * 255) / GBM;
-                  sb =((s1 & BBM) * 255) / BBM;
-                  */
+                  for (unsigned int i = 0; i < 32; ++i)
+                  {
+                     int TileIndex = j * 32 + i;
+                     WORD wMaskPixel = pMaskSurface[TileIndex];
+                     BYTE MaskR = m_pLutAlphaR[(wMaskPixel & RBM)];
+                     BYTE MaskG = m_pLutAlphaG[(wMaskPixel & GBM)];
+                     BYTE MaskB = m_pLutAlphaB[(wMaskPixel & BBM)];
 
-                  sr =m_pLutAlphaR[(s1 & RBM)];
-                  sg =m_pLutAlphaG[(s1 & GBM)];
-                  sb =m_pLutAlphaB[(s1 & BBM)];
-                     
-            
-            
-            
-            
-                  float Intensity = rSmoothTile.m_Layers[c].GetIntensity(i, j) / 255.0f;
-                  //float Intensity = m_pfIntensity[rSmoothTile.m_Layers[c].GetIntensity(i, j)];
-                  //BYTE Intensity = rSmoothTile.m_Layers[c].GetIntensity(i, j) >>8;
+                     float fMaskValue = (MaskR + MaskG + MaskB) / (3.0f * 255.0f);
 
-                  m_pSmoothTileTmpR[TileIndex] += (WORD)(sr * Intensity);
-                  m_pSmoothTileTmpG[TileIndex] += (WORD)(sg * Intensity);
-                  m_pSmoothTileTmpB[TileIndex] += (WORD)(sb * Intensity);
+                     if (fMaskValue <= 0.1f)
+                     {
+                        rMaskInfo.m_VecMask[TileIndex] = 0.0f;
+                        bHasBlack = true;
+                     }
+                     else if (fMaskValue >= 0.9f)
+                     {
+                        rMaskInfo.m_VecMask[TileIndex] = 1.0f;
+                        bHasWhite = true;
+                     }
+                     else
+                     {
+                        bInvalidMask = true;
+                        break;
+                     }
+                  }
+               }
+
+               if (bInvalidMask == false && bHasBlack && bHasWhite)
+               {
+                  rMaskInfo.m_bIsBinaryMask = true;
+               }
+
+               pMaskSprite->ReleaseSurfaceMemory(pMaskSurface);
+            }
+         }
+      }
+
+      if (rMaskInfo.m_bIsBinaryMask)
+      {
+         int iLeftLayer = -1;
+         int iRightLayer = -1;
+
+         for (UINT c = 0; c < rSmoothTile.m_Layers.size(); ++c)
+         {
+            if (rSmoothTile.m_Offsets[c].m_OffsetX < 0)
+            {
+               iLeftLayer = c;
+            }
+            else if (rSmoothTile.m_Offsets[c].m_OffsetX > 0)
+            {
+               iRightLayer = c;
+            }
+         }
+
+         if (iLeftLayer != -1 && iRightLayer != -1)
+         {
+            int iNXLeft = iX + rSmoothTile.m_Offsets[iLeftLayer].m_OffsetX;
+            int iNYLeft = iY + rSmoothTile.m_Offsets[iLeftLayer].m_OffsetY;
+            iNXLeft = NM_Max<int>(0, iNXLeft);
+            iNXLeft = NM_Min<int>(iNXLeft, (ViewWidth+Square+Square)-1);
+            iNYLeft = NM_Max<int>(0, iNYLeft);
+            iNYLeft = NM_Min<int>(iNYLeft, (ViewHeight+Square+Square)-1);
+
+            int iNXRight = iX + rSmoothTile.m_Offsets[iRightLayer].m_OffsetX;
+            int iNYRight = iY + rSmoothTile.m_Offsets[iRightLayer].m_OffsetY;
+            iNXRight = NM_Max<int>(0, iNXRight);
+            iNXRight = NM_Min<int>(iNXRight, (ViewWidth+Square+Square)-1);
+            iNYRight = NM_Max<int>(0, iNYRight);
+            iNYRight = NM_Min<int>(iNYRight, (ViewHeight+Square+Square)-1);
+
+            unsigned short LeftColorID = CompiledView1[(iNXLeft)+((iNYLeft)*iW)];
+            unsigned short RightColorID = CompiledView1[(iNXRight)+((iNYRight)*iW)];
+
+            CV2Sprite *pLeftTile = GetSpriteID(LeftColorID);
+            CV2Sprite *pRightTile = GetSpriteID(RightColorID);
+
+            if (pLeftTile && pRightTile)
+            {
+               LPWORD pLeftSurface = pLeftTile->GetSurfaceMemory();
+               LPWORD pRightSurface = pRightTile->GetSurfaceMemory();
+
+               if (pLeftSurface && pRightSurface)
+               {
+                  for (unsigned int j = 0; j < 16; ++j)
+                  {
+                     for (unsigned int i = 0; i < 32; ++i)
+                     {
+                        int TileIndex = j * 32 + i;
+
+                        WORD LeftPixel = pLeftSurface[TileIndex];
+                        WORD RightPixel = pRightSurface[TileIndex];
+
+                        float fMaskValue = rMaskInfo.m_VecMask[TileIndex];
+                        float fInvMask = 1.0f - fMaskValue;
+
+                        float fRedValue = m_pLutAlphaR[(LeftPixel & RBM)] * fInvMask + m_pLutAlphaR[(RightPixel & RBM)] * fMaskValue;
+                        float fGreenValue = m_pLutAlphaG[(LeftPixel & GBM)] * fInvMask + m_pLutAlphaG[(RightPixel & GBM)] * fMaskValue;
+                        float fBlueValue = m_pLutAlphaB[(LeftPixel & BBM)] * fInvMask + m_pLutAlphaB[(RightPixel & BBM)] * fMaskValue;
+
+                        m_pSmoothTileTmpR[TileIndex] = (WORD)(fRedValue + 0.5f);
+                        m_pSmoothTileTmpG[TileIndex] = (WORD)(fGreenValue + 0.5f);
+                        m_pSmoothTileTmpB[TileIndex] = (WORD)(fBlueValue + 0.5f);
+                     }
+                  }
+
+                  bHandledByBinaryMask = true;
+               }
+
+               if (pLeftSurface)
+               {
+                  pLeftTile->ReleaseSurfaceMemory(pLeftSurface);
+               }
+               if (pRightSurface)
+               {
+                  pRightTile->ReleaseSurfaceMemory(pRightSurface);
                }
             }
          }
-         pLayerTile->ReleaseSurfaceMemory(surf1); 
       }
-      else
+   }
+
+   if (bHandledByBinaryMask == false)
+   {
+      for (UINT c = 0; c < rSmoothTile.m_Layers.size(); ++c)
       {
-         return false;
+         int iNX = iX+rSmoothTile.m_Offsets[c].m_OffsetX;
+         int iNY = iY+rSmoothTile.m_Offsets[c].m_OffsetY;
+         iNX = NM_Max<int>(0, iNX);
+         iNX = NM_Min<int>(iNX, (ViewWidth+Square+Square)-1);
+         iNY = NM_Max<int>(0, iNY);
+         iNY = NM_Min<int>(iNY, (ViewHeight+Square+Square)-1);
+
+
+         unsigned short LayerColorID = CompiledView1[(iNX)+((iNY)*iW)];
+
+         CV2Sprite  *pLayerTile = GetSpriteID(LayerColorID);
+
+         if(pLayerTile)
+         {
+            LPWORD surf1 = pLayerTile->GetSurfaceMemory();
+
+            if(surf1)
+            {
+
+               for (unsigned int j = 0; j < 16; ++j)
+               {
+                  for (unsigned int i = 0; i < 32; ++i)
+                  {
+                     int TileIndex = j * 32 + i;
+
+
+                     s1 = surf1[TileIndex];
+                     /*
+                     sr =((s1 & RBM) * 255) / RBM;
+                     sg =((s1 & GBM) * 255) / GBM;
+                     sb =((s1 & BBM) * 255) / BBM;
+                     */
+
+                     sr =m_pLutAlphaR[(s1 & RBM)];
+                     sg =m_pLutAlphaG[(s1 & GBM)];
+                     sb =m_pLutAlphaB[(s1 & BBM)];
+
+
+
+
+
+                     float Intensity = rSmoothTile.m_Layers[c].GetIntensity(i, j) / 255.0f;
+                     //float Intensity = m_pfIntensity[rSmoothTile.m_Layers[c].GetIntensity(i, j)];
+                     //BYTE Intensity = rSmoothTile.m_Layers[c].GetIntensity(i, j) >>8;
+
+                     m_pSmoothTileTmpR[TileIndex] += (WORD)(sr * Intensity);
+                     m_pSmoothTileTmpG[TileIndex] += (WORD)(sg * Intensity);
+                     m_pSmoothTileTmpB[TileIndex] += (WORD)(sb * Intensity);
+                  }
+               }
+            }
+            pLayerTile->ReleaseSurfaceMemory(surf1);
+         }
+         else
+         {
+            return false;
+         }
       }
-   } 
+   }
    
    //Sprite Temp; 
    //Temp.Create(32, 16, FALSE, 0, 0, 0, 0, 0); 
